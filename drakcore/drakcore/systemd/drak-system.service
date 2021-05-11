@@ -1,6 +1,7 @@
 [Unit]
 Description=drak-system service
 After=network.target
+Requires=redis.service
 
 [Service]
 Type=simple
