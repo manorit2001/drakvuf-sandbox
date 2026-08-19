@@ -5,9 +5,10 @@ Using Intel Processor Trace Features (Experimental)
 Enable IPT plugin in drakrun
 ----------------------------
 
-1. In ``/etc/drakrun/config.ini``, add ``ipt`` plugin under ``[drakvuf_plugins]`` section ``__all__`` in order to enable IPT tracing.
-2. In ``/etc/drakrun/scripts/cfg.template`` add a new entry: ``vmtrace_buf_kb = 8192``
-3. Execute ``systemctl restart drakrun@1`` (repeat for each drakrun instance if you have scaled them up).
+1. In ``/etc/drakrun/scripts/cfg.template`` add a new entry: ``vmtrace_buf_kb = 8192``
+2. Execute ``systemctl restart drakrun-worker@1`` (repeat for each drakrun instance if you have scaled them up).
+3. Use ``ipt`` and ``codemon`` Drakvuf plugins while submitting your analysis.
+ 
 
 
 Install required extra dependencies
@@ -25,6 +26,7 @@ In order to analyze IPT data streams, you need to install ``libipt``, ``xed``, `
   git clone https://github.com/intelxed/xed.git
   git clone https://github.com/intelxed/mbuild.git
   git clone https://github.com/gabime/spdlog.git
+  git clone https://github.com/p-ranav/argparse.git -b v2.9
   git clone https://github.com/CERT-Polska/drakvuf-sandbox.git
 
   cd xed
@@ -41,7 +43,11 @@ In order to analyze IPT data streams, you need to install ``libipt``, ``xed``, `
   cmake .
   make -j$(nproc) install
 
-  cd ../drakvuf-sandbox/drakcore/drakcore/tools/ipt
+  cd ../argparse
+  cmake .
+  make -j$(nproc) install
+
+  cd ../drakvuf-sandbox/drakrun/drakrun/tools/ipt
   cmake .
   make install
 

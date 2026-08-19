@@ -17,20 +17,22 @@ import sphinx_rtd_theme
 
 import os
 import sys
-sys.path.insert(0, os.path.abspath('../drakcore'))
 sys.path.insert(0, os.path.abspath('../drakrun'))
 
 
 # -- Project information -----------------------------------------------------
 
 project = 'DRAKVUF Sandbox'
-copyright = '2021, CERT Polska'
+copyright = '2025, CERT Polska'
 author = 'CERT Polska'
 
 # The full version, including alpha/beta/rc tags
-release = 'v0.19.0-dev'
+release = 'v0.21.0'
 
 latex_engine = 'xelatex'
+
+def setup(app):
+    app.add_css_file("theme-overrides.css")
 
 # -- General configuration ---------------------------------------------------
 
@@ -39,7 +41,7 @@ latex_engine = 'xelatex'
 # ones.
 extensions = [
     "sphinx_rtd_theme",
-    "IPython.sphinxext.ipython_console_highlighting",
+    "sphinx.ext.autosectionlabel",
     "sphinx.ext.graphviz",
 ]
 
@@ -65,3 +67,4 @@ html_theme = 'sphinx_rtd_theme'
 # relative to this directory. They are copied after the builtin static files,
 # so a file named "default.css" will overwrite the builtin "default.css".
 html_static_path = ['_static']
+

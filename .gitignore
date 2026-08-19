@@ -1,4 +1,10 @@
 /configs/
 /venv/
 /*.sav
+.idea/
 .vscode/
+*.egg-info/
+__pycache__/
+build/
+dist/
+drakrun/tools/get-explorer-pid

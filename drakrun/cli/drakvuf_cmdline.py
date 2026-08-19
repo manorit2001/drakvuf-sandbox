@@ -1,0 +1,74 @@
+import logging
+import shlex
+
+import click
+
+from drakrun.lib.config import load_config
+from drakrun.lib.drakvuf_cmdline import get_base_drakvuf_cmdline
+from drakrun.lib.install_info import InstallInfo
+from drakrun.lib.libvmi import VmiInfo
+from drakrun.lib.paths import INSTALL_INFO_PATH, VMI_INFO_PATH, VMI_KERNEL_PROFILE_PATH
+from drakrun.lib.version_detection import get_drakvuf_version
+from drakrun.lib.vm import VirtualMachine
+
+log = logging.getLogger(__name__)
+
+
+@click.command(help="Get base Drakvuf cmdline")
+@click.option(
+    "--vm-id",
+    "vm_id",
+    default=1,
+    type=int,
+    show_default=True,
+    help="VM id to use for generating profile",
+)
+@click.option(
+    "--cmd",
+    default=None,
+    help="Command line to inject for execution",
+)
+@click.option(
+    "--method",
+    default="createproc",
+    help="Execution method for injection (createproc, shellexec, runas)",
+)
+@click.option(
+    "--working-dir", default=None, help="Working directory for executed sample"
+)
+def drakvuf_cmdline(vm_id, cmd, method, working_dir):
+    from drakrun.analyzer.startup_command import make_exec_parameters
+
+    config = load_config()
+    install_info = InstallInfo.load(INSTALL_INFO_PATH)
+
+    vm = VirtualMachine(vm_id, install_info, config.network)
+    vmi_info = VmiInfo.load(VMI_INFO_PATH)
+    drakvuf_version_info = get_drakvuf_version()
+    if cmd is not None:
+        supports_shellexec = drakvuf_version_info.supports_shellexec_verb
+        exec_parameters = make_exec_parameters(
+            cmd, method, working_dir, supports_shellexec
+        )
+    else:
+        exec_parameters = None
+    print(
+        shlex.join(
+            get_base_drakvuf_cmdline(
+                vm.vm_name,
+                VMI_KERNEL_PROFILE_PATH.as_posix(),
+                vmi_info=vmi_info,
+                drakvuf_version_info=drakvuf_version_info,
+                **(
+                    dict(
+                        exec_cmd=exec_parameters.command,
+                        shellexec_args=exec_parameters.shellexec_args,
+                        start_method=exec_parameters.start_method,
+                        working_dir=exec_parameters.working_dir,
+                    )
+                    if exec_parameters
+                    else {}
+                )
+            )
+        )
+    )

@@ -1,0 +1,54 @@
+import { PluginList } from "./PluginPicker.jsx";
+import { formatDate } from "./formatUtils.js";
+
+export function AnalysisMetadataTable({ analysis }) {
+    const startCommand = analysis.options["start_command"] || "-";
+    return (
+        <table className="datatable-table">
+            <tbody>
+                <tr>
+                    <th>File name</th>
+                    <td>{analysis.file.name}</td>
+                </tr>
+                <tr>
+                    <th>SHA256</th>
+                    <td>{analysis.file.sha256}</td>
+                </tr>
+                <tr>
+                    <th>Type</th>
+                    <td>{analysis.file.type}</td>
+                </tr>
+                <tr>
+                    <th>Start command</th>
+                    <td>
+                        {Array.isArray(startCommand)
+                            ? startCommand.join(" ")
+                            : startCommand}
+                    </td>
+                </tr>
+                <tr>
+                    <th>Analysis time</th>
+                    <td>{analysis.options["timeout"]} seconds</td>
+                </tr>
+                <tr>
+                    <th>Job started at</th>
+                    <td>{formatDate(analysis["time_started"])}</td>
+                </tr>
+                <tr>
+                    <th>Execution started at</th>
+                    <td>{formatDate(analysis["time_execution_started"])}</td>
+                </tr>
+                <tr>
+                    <th>Job finished at</th>
+                    <td>{formatDate(analysis["time_finished"])}</td>
+                </tr>
+                <tr>
+                    <th>Plugins</th>
+                    <td>
+                        <PluginList plugins={analysis.options["plugins"]} />
+                    </td>
+                </tr>
+            </tbody>
+        </table>
+    );
+}

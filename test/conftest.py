@@ -1,232 +1,145 @@
-import requests
 import os
 import logging
-import socket
 import time
 import subprocess
-import paramiko.config
 import pytest
 
 from pathlib import Path
-from paramiko.rsakey import RSAKey
-from fabric import task, Connection, Config
 from invoke.exceptions import UnexpectedExit
-from minio import Minio
-from minio.error import ResponseError
+from vm_runner_client import DrakvufVM
 
-from utils import apt_install, dpkg_install
+from utils import apt_install
 
 logging.basicConfig(level=logging.INFO)
 
-DRONE_BUILD_NUMBER = os.getenv("DRONE_BUILD_NUMBER")
+DRAKVUF_DEBS_PATH = os.getenv("DRAKVUF_DEBS_PATH")
 DRAKVUF_COMMIT = subprocess.check_output(["git", "ls-tree", "HEAD", "../drakvuf"]).split()[2].decode()
 
-VM_RUNNER_HOST = "http://" + os.getenv("VM_RUNNER_HOST")
-
-BASE_IMAGE = os.getenv("BASE_IMAGE")
+BASE_IMAGE = os.getenv("BASE_IMAGE", "debian-10-generic-amd64")
 SNAPSHOT_VERSION = os.getenv("SNAPSHOT_VERSION")
 MINIO_HOST = os.getenv("MINIO_HOST")
 MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY")
 MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY")
-RUNNER_KEY = os.getenv("RUNNER_KEY")
-
-BUNDLE_DEB = f"drakvuf-bundle-{DRAKVUF_COMMIT}.deb"
-MINIO_DEBS = [
-    f"drakcore_drone-{DRONE_BUILD_NUMBER}.deb",
-    f"drakrun_drone-{DRONE_BUILD_NUMBER}.deb",
-]
-
-DRAKMON_DEPS = [
-    "python3.7",
-    "libpython3.7",
-    "python3-distutils",
-    "tcpdump",
-    "genisoimage",
-    "qemu-utils",
-    "bridge-utils",
-    "dnsmasq",
-    "libmagic1",
-    "lvm2",
-]
-
-DRAKVUF_DEPS = [
-    "libpixman-1-0",
-    "libpng16-16",
-    "libnettle6",
-    "libgnutls30",
-    "libfdt1",
-    "libglib2.0-0",
-    "libglib2.0-dev",
-    "libjson-c3",
-    "libyajl2",
-    "libaio1",
-]
+MINIO_SERVER_BIN_PATH = os.getenv("MINIO_SERVER_BIN_PATH")
+# VM_RUNNER_API_KEY
+# VM_RUNNER_SOCKS_USERNAME
+# VM_RUNNER_SOCKS_PASSWORD
 
 DRAKMON_SERVICES = [
     "drak-system.service",
-    "drak-minio.service",
     "drak-web.service",
-    "drak-postprocess@1.service",
     "redis-server.service",
 ]
 
-def rebuild_vm(host, ssh_key, api_key):
-    response = requests.post(f"{host}/vm/build", json={
-        "image": BASE_IMAGE,
-        "volume_size": 100,
-        "ssh_key": ssh_key,
-    }, headers={
-        "Authorization": f"Bearer {api_key}",
-    })
-    response.raise_for_status()
-    return response.json()
+DRAKVUF_SANDBOX_WHLS = [
+    "drakvuf_sandbox-*.whl",
+]
 
-def server_alive(host, port):
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    try:
-        s.connect((host, port))
-        return True
-    except OSError:
-        return False
-    finally:
-        s.close()
+DRAKVUF_DEBS = [
+    "drakvuf-bundle-*.deb",
+]
 
 
-def download_debs(objects, download_path=Path(".")):
-    mc = Minio(
-        MINIO_HOST,
-        access_key=MINIO_ACCESS_KEY,
-        secret_key=MINIO_SECRET_KEY,
-        secure=False,
-    )
+def resolve_package_paths(debs):
+    debs_path = Path(DRAKVUF_DEBS_PATH)
+    if not debs_path.is_dir():
+        raise RuntimeError(f"Incorrect DRAKVUF_DEBS_PATH: {DRAKVUF_DEBS_PATH}")
 
-    output_files = []
+    for deb in debs:
+        path_candidates = list(debs_path.glob("**/" + deb))
+        if not path_candidates:
+            raise RuntimeError(f"{deb} not found under DRAKVUF_DEBS_PATH")
+        if len(path_candidates) > 1:
+            raise RuntimeError(f"Found multiple candidates for {deb}: {path_candidates}")
+        yield path_candidates[0]
 
-    for obj in objects:
-        logging.info("Downloading %s", obj)
-        try:
-            data = mc.get_object("debs", obj)
-            fpath = download_path / obj
-            output_files.append(fpath)
-
-            with open(fpath, "wb") as f:
-                for d in data.stream(32 * 1024):
-                    f.write(d)
-        except ResponseError as e:
-            logging.error("Failed to download %s", obj)
-            raise
-    return output_files
 
 @pytest.fixture(scope="session")
-def vm_host(drakmon_setup):
-    connection, ip = drakmon_setup
-    return ip
+def vm_host(drakmon_setup: DrakvufVM):
+    return drakmon_setup.vm_ip
+
 
 @pytest.fixture(scope="session")
-def drakmon_vm(drakmon_setup):
-    connection, ip = drakmon_setup
-    return connection
+def drakmon_vm(drakmon_setup: DrakvufVM):
+    return drakmon_setup
+
+
+@pytest.fixture(scope="session")
+def drakmon_ssh(drakmon_setup: DrakvufVM):
+    with drakmon_setup.connect_ssh() as ssh:
+        yield ssh
+
 
 @pytest.fixture(scope="session")
 def drakmon_setup():
-    key = RSAKey.generate(bits=2048)
-    with open("/root/.ssh/id_rsa", "w") as f:
-        key.write_private_key(f)
+    logging.info("Running end to end test: creating VM")
 
-    logging.info("Running end to end test")
+    drakvuf_sandbox_whls = list(resolve_package_paths(DRAKVUF_SANDBOX_WHLS))
+    drakvuf_debs = list(resolve_package_paths(DRAKVUF_DEBS))
 
+    drakvuf_vm = DrakvufVM.create(BASE_IMAGE)
+    logging.info(f"VM {drakvuf_vm.identity} created.")
 
-    debs = download_debs(MINIO_DEBS)
-    [drakvuf_bundle] = download_debs([BUNDLE_DEB])
+    logging.info("Waiting for VM to be alive...")
+    drakvuf_vm.wait_for_state(alive=True)
 
-    response = rebuild_vm(VM_RUNNER_HOST,
-        ssh_key="ssh-rsa " + key.get_base64(),
-        api_key=RUNNER_KEY
-    )
-    VM_HOST = response["ip"]
-    ssh_config = paramiko.config.SSHConfig.from_text(
-        f"""
-    Host testvm
-        User root
-        HostName {VM_HOST}
-    """
-    )
+    with drakvuf_vm.connect_ssh() as ssh:
+        for deb in (drakvuf_sandbox_whls + drakvuf_debs):
+            logging.info("Uploading %s", deb.name)
+            ssh.put(deb.as_posix())
 
-    FABRIC_CONFIG = Config(ssh_config=ssh_config)
-
-    while not server_alive(VM_HOST, 22):
-        time.sleep(0.5)
-
-    with Connection("testvm", config=FABRIC_CONFIG) as c:
-        # Upload debs
-        for d in map(str, [drakvuf_bundle, *debs]):
-            logging.info("Uploading %s", d)
-            c.put(d)
-
-        c.run("apt-get --allow-releaseinfo-change update")
-
-        apt_install(c, DRAKVUF_DEPS)
-
+        logging.info("Uploading MinIO server binary")
+        ssh.put(MINIO_SERVER_BIN_PATH, "/usr/local/bin/minio")
+        logging.info("Upload finished")
+        ssh.run("chmod +x /usr/local/bin/minio")
+        ssh.run("apt-get --allow-releaseinfo-change update", in_stream=False)
+        logging.info("Install DRAKVUF")
         # Install DRAKVUF
-        dpkg_install(c, drakvuf_bundle.name)
+        for d in drakvuf_debs:
+            apt_install(ssh, ["./" + d.name])
+        # Change DRAK_DOM0_RAM to 8GB
+        ssh.run('sed -i "s/# DRAK_DOM0_RAM=.*/DRAK_DOM0_RAM=8192/g" /etc/default/grub.d/xen.cfg')
+        ssh.run("update-grub")
 
         # Reboot into Xen
-        c.run("systemctl reboot", disown=True)
+        ssh.run("systemctl reboot", disown=True)
+
+    logging.info("Rebooting...")
 
     # Wait until VM reboots
-    while server_alive(VM_HOST, 22):
-        time.sleep(0.5)
+    drakvuf_vm.wait_for_state(alive=False)
+
     logging.info("VM went down")
 
-    while not server_alive(VM_HOST, 22):
-        time.sleep(0.5)
+    drakvuf_vm.wait_for_state(alive=True)
+
     logging.info("VM back up")
 
-    with Connection("testvm", config=FABRIC_CONFIG) as c:
-        apt_install(c, ["redis-server"])
-        apt_install(c, DRAKMON_DEPS)
+    with drakvuf_vm.connect_ssh() as ssh:
+        ssh.run("apt-get --allow-releaseinfo-change update", in_stream=False)
+        apt_install(ssh, ["redis-server", "python3", "python3-pip", "python3-venv", "git", "dnsmasq", "bridge-utils"])
+        logging.info("Setting up pip and virtualenv")
+        ssh.run(f"DEBIAN_FRONTEND=noninteractive pip3 install --upgrade pip", in_stream=False)
+        ssh.run(f"DEBIAN_FRONTEND=noninteractive python3 -m venv /root/venv", in_stream=False)
 
-        for d in debs:
-            dpkg_install(c, d.name)
-
-        # Save default config
-        c.run("cp /etc/drakrun/config.ini /etc/drakrun/config.ini.bak")
-
-        c.run(f"""
-cat > /etc/drakrun/config.ini <<EOF
-[minio]
-address={MINIO_HOST}
-secure=0
-access_key={MINIO_ACCESS_KEY}
-secret_key={MINIO_SECRET_KEY}
-EOF""")
+        for d in drakvuf_sandbox_whls:
+            ssh.run(f"DEBIAN_FRONTEND=noninteractive /root/venv/bin/pip install ./{d.name}", in_stream=False)
 
         # Import snapshot
         assert SNAPSHOT_VERSION is not None
-        c.run(f"draksetup snapshot import --bucket snapshots --name {SNAPSHOT_VERSION} --full")
-
-        # Restore original config
-        c.run("cp /etc/drakrun/config.ini.bak /etc/drakrun/config.ini")
+        ssh.run(f"/root/venv/bin/draksetup install-minio")
+        ssh.run(f"/root/venv/bin/draksetup init --unattended")
+        ssh.run(f'DRAKRUN_MINIO_ADDRESS="{MINIO_HOST}" '
+                f'DRAKRUN_MINIO_SECURE=0 '
+                f'DRAKRUN_MINIO_ACCESS_KEY="{MINIO_ACCESS_KEY}" '
+                f'DRAKRUN_MINIO_SECRET_KEY="{MINIO_SECRET_KEY}" '
+                f'/root/venv/bin/draksetup snapshot import --bucket snapshots --name {SNAPSHOT_VERSION} --full')
 
         # Shut up QEMU
-        c.run("ln -s /dev/null /root/SW_DVD5_Win_Pro_7w_SP1_64BIT_Polish_-2_MLF_X17-59386.ISO")
+        ssh.run("ln -s /dev/null /root/SW_DVD5_Win_Pro_7w_SP1_64BIT_Polish_-2_MLF_X17-59386.ISO")
+        # Wait a bit until all service start (temporary fix)
+        time.sleep(10)
+        ssh.run("systemctl start drakrun@1")
 
-        c.run("systemctl start drakrun@1")
-
-    return Connection("testvm", config=FABRIC_CONFIG), VM_HOST
-
-
-@pytest.fixture(scope="session")
-def karton_bucket(drakmon_vm):
-    """ Wait up to 30 seconds until karton bucket appears """
-    for _ in range(30):
-        try:
-            drakmon_vm.run("[[ -d /var/lib/drakcore/minio/karton ]]")
-            drakmon_vm.run("[[ -d /var/lib/drakcore/minio/drakrun ]]")
-            break
-        except UnexpectedExit:
-            time.sleep(1.0)
-    else:
-        raise RuntimeError("Buckets didn't appear!")
-
-    return None
+    logging.info("VM provisioned, starting tests...")
+    return drakvuf_vm
